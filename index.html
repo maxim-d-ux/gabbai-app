@@ -1,2 +1,480 @@
 
 
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>גבאי דיגיטלי</title>
+
+  <!-- PWA & Mobile settings -->
+  <meta name="theme-color" content="#1e40af" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+
+  <!-- React & Babel Frameworks -->
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  <!-- Firebase SDK -->
+  <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore-compat.js"></script>
+
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      user-select: none;
+      -webkit-tap-highlight-color: transparent;
+      background-color: #f8fafc;
+    }
+  </style>
+</head>
+<body class="bg-slate-50 text-slate-900">
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect } = React;
+
+    // Firebase Config - החיבור האישי שלך
+    const firebaseConfig = {
+      apiKey: "AIzaSyBUqAbZqg1PyccNq0kH_qcZRxocXvQnDRc",
+      authDomain: "gabbaiapp-9f22e.firebaseapp.com",
+      projectId: "gabbaiapp-9f22e",
+      storageBucket: "gabbaiapp-9f22e.firebasestorage.app",
+      messagingSenderId: "341456962238",
+      appId: "1:341456962238:web:3314ab78afb0fa4252d4ef"
+    };
+
+    if (!firebase.apps.length) {
+      firebase.initializeApp(firebaseConfig);
+    }
+    const db = firebase.firestore();
+
+    function GabbaiApp() {
+      const [activeTab, setActiveTab] = useState('reading');
+      const [readingType, setReadingType] = useState('weekday');
+      const [worshippers, setWorshippers] = useState([]);
+      const [history, setHistory] = useState([]);
+      const [loading, setLoading] = useState(true);
+      
+      const [hebrewDate, setHebrewDate] = useState('טוען תאריך...');
+      const [gregorianDate, setGregorianDate] = useState('');
+      const [parasha, setParasha] = useState('');
+      
+      const [showAddForm, setShowAddForm] = useState(false);
+      const [editingWorshipper, setEditingWorshipper] = useState(null);
+      const [formData, setFormData] = useState({ name: '', status: 'ישראל', yahrzeit: '', notes: '' });
+
+      useEffect(() => {
+        const today = new Date();
+        const formattedGregorian = today.toLocaleDateString('he-IL', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+        setGregorianDate(formattedGregorian);
+
+        fetch(`https://www.hebcal.com/converter?cfg=json&gy=${today.getFullYear()}&gm=${today.getMonth() + 1}&gd=${today.getDate()}&g2h=1`)
+          .then(res => res.json())
+          .then(data => setHebrewDate(data.hebrew))
+          .catch(() => setHebrewDate('טוען תאריך...'));
+
+        fetch(`https://www.hebcal.com/shabbat?cfg=json&geonameid=281184&m=50`)
+          .then(res => res.json())
+          .then(data => {
+            const parashaItem = data.items.find(item => item.category === 'parashat');
+            if (parashaItem) setParasha(parashaItem.hebrew);
+          })
+          .catch(() => {});
+      }, []);
+
+      useEffect(() => {
+        const unsubWorshippers = db.collection('worshippers').onSnapshot(snapshot => {
+          const docs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+          setWorshippers(docs);
+          setLoading(false);
+        });
+
+        const unsubHistory = db.collection('history').orderBy('timestamp', 'desc').onSnapshot(snapshot => {
+          const docs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+          setHistory(docs);
+        });
+
+        return () => {
+          unsubWorshippers();
+          unsubHistory();
+        };
+      }, []);
+
+      useEffect(() => {
+        if (window.lucide) {
+          window.lucide.createIcons();
+        }
+      }, [activeTab, showAddForm, worshippers]);
+
+      const handleSaveWorshipper = async (e) => {
+        if (e) e.preventDefault();
+        if (!formData.name.trim()) return;
+
+        if (editingWorshipper) {
+          await db.collection('worshippers').doc(editingWorshipper.id).update({
+            name: formData.name,
+            status: formData.status,
+            yahrzeit: formData.yahrzeit,
+            notes: formData.notes
+          });
+        } else {
+          await db.collection('worshippers').add({
+            name: formData.name,
+            status: formData.status,
+            yahrzeit: formData.yahrzeit,
+            notes: formData.notes,
+            callCount: 0,
+            lastCalled: null
+          });
+        }
+
+        setFormData({ name: '', status: 'ישראל', yahrzeit: '', notes: '' });
+        setEditingWorshipper(null);
+        setShowAddForm(false);
+      };
+
+      const handleRecordAliya = async (worshipper, aliyahName) => {
+        const newCount = (worshipper.callCount || 0) + 1;
+        const now = new Date().toISOString();
+
+        await db.collection('worshippers').doc(worshipper.id).update({
+          callCount: newCount,
+          lastCalled: now
+        });
+
+        await db.collection('history').add({
+          worshipperId: worshipper.id,
+          worshipperName: worshipper.name,
+          aliyahName: aliyahName,
+          dateHebrew: hebrewDate,
+          timestamp: now
+        });
+
+        alert(`נרשמה עלייה ל${worshipper.name} (${aliyahName})`);
+      };
+
+      const handleDeleteWorshipper = async (id) => {
+        if (confirm('האם למחוק מתפלל זה?')) {
+          await db.collection('worshippers').doc(id).delete();
+          setShowAddForm(false);
+        }
+      };
+
+      return (
+        <div className="min-h-screen flex flex-col max-w-md mx-auto bg-slate-100 shadow-xl relative pb-6">
+          <header className="bg-gradient-to-r from-blue-800 to-indigo-900 text-white p-4 shadow-md">
+            <div className="flex justify-between items-center mb-3">
+              <h1 className="text-xl font-bold tracking-wide">גבאי דיגיטלי</h1>
+              <span className="text-xs bg-emerald-500 text-white px-2 py-1 rounded-full font-medium shadow-sm">
+                מחובר לענן
+              </span>
+            </div>
+
+            <nav className="grid grid-cols-5 gap-1 bg-blue-950/40 p-1 rounded-xl text-center text-xs">
+              {[
+                { id: 'reading', label: 'קריאה', icon: 'book-open' },
+                { id: 'worshippers', label: 'מתפללים', icon: 'users' },
+                { id: 'history', label: 'השלמה', icon: 'history' },
+                { id: 'calendar', label: 'לוח שנה', icon: 'calendar' },
+                { id: 'reports', label: 'דוחות', icon: 'bar-chart-3' }
+              ].map(tab => (
+                <button
+                  key={tab.id}
+                  onClick={() => { setActiveTab(tab.id); setShowAddForm(false); }}
+                  className={`py-2 px-1 rounded-lg flex flex-col items-center gap-1 transition-all ${
+                    activeTab === tab.id ? 'bg-white text-blue-900 font-bold shadow' : 'text-blue-100 hover:bg-white/10'
+                  }`}
+                >
+                  <i data-lucide={tab.icon} className="w-4 h-4"></i>
+                  <span>{tab.label}</span>
+                </button>
+              ))}
+            </nav>
+          </header>
+
+          <main className="flex-1 p-4 overflow-y-auto">
+            {showAddForm ? (
+              <div className="bg-white rounded-2xl p-5 shadow-sm border border-slate-200">
+                <div className="flex justify-between items-center pb-4 mb-4 border-b border-slate-100">
+                  <h2 className="text-lg font-bold text-slate-800">
+                    {editingWorshipper ? 'עריכת מתפלל' : 'הוספת מתפלל חדש'}
+                  </h2>
+                  <div className="flex items-center gap-2">
+                    {editingWorshipper && (
+                      <button 
+                        onClick={() => handleDeleteWorshipper(editingWorshipper.id)}
+                        className="text-red-500 p-2 hover:bg-red-50 rounded-lg"
+                      >
+                        <i data-lucide="trash-2" className="w-5 h-5"></i>
+                      </button>
+                    )}
+                    <button 
+                      onClick={handleSaveWorshipper}
+                      className="bg-blue-600 text-white font-bold px-4 py-2 rounded-xl text-sm shadow hover:bg-blue-700"
+                    >
+                      שמור
+                    </button>
+                    <button 
+                      onClick={() => setShowAddForm(false)}
+                      className="text-slate-400 p-2 hover:bg-slate-100 rounded-lg"
+                    >
+                      <i data-lucide="x" className="w-5 h-5"></i>
+                    </button>
+                  </div>
+                </div>
+
+                <form onSubmit={handleSaveWorshipper} className="space-y-4">
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-600 mb-1">שם מלא</label>
+                    <input 
+                      type="text"
+                      required
+                      value={formData.name}
+                      onChange={e => setFormData({...formData, name: e.target.value})}
+                      placeholder="שם המתפלל"
+                      className="w-full p-3 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-600 mb-1">סטטוס</label>
+                    <div className="grid grid-cols-3 gap-2">
+                      {['כהן', 'לוי', 'ישראל'].map(st => (
+                        <button
+                          type="button"
+                          key={st}
+                          onClick={() => setFormData({...formData, status: st})}
+                          className={`py-2 rounded-xl text-sm font-semibold border ${
+                            formData.status === st ? 'bg-blue-600 text-white border-blue-600' : 'border-slate-200 text-slate-700'
+                          }`}
+                        >
+                          {st}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-600 mb-1">תאריך אזכרה (לועזי)</label>
+                    <input 
+                      type="date"
+                      value={formData.yahrzeit}
+                      onChange={e => setFormData({...formData, yahrzeit: e.target.value})}
+                      className="w-full p-3 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-600 mb-1">הערות למי שבירך</label>
+                    <textarea 
+                      rows="3"
+                      value={formData.notes}
+                      onChange={e => setFormData({...formData, notes: e.target.value})}
+                      placeholder="הערות נוספות..."
+                      className="w-full p-3 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none"
+                    ></textarea>
+                  </div>
+                </form>
+              </div>
+            ) : (
+              <>
+                {activeTab === 'reading' && (
+                  <div className="space-y-4">
+                    <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm text-center">
+                      <h2 className="text-xl font-bold text-blue-900 mb-1">{hebrewDate}</h2>
+                      <p className="text-xs text-slate-500 mb-2">{gregorianDate}</p>
+                      {parasha && (
+                        <span className="inline-block bg-amber-50 text-amber-800 text-xs px-3 py-1 rounded-full font-semibold border border-amber-200">
+                          פרשת השבוע: {parasha}
+                        </span>
+                      )}
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2 bg-slate-200 p-1 rounded-xl">
+                      <button
+                        onClick={() => setReadingType('weekday')}
+                        className={`py-2 rounded-lg text-xs font-bold transition-all ${
+                          readingType === 'weekday' ? 'bg-white text-blue-900 shadow' : 'text-slate-600'
+                        }`}
+                      >
+                        שני וחמישי (3 עליות)
+                      </button>
+                      <button
+                        onClick={() => setReadingType('special')}
+                        className={`py-2 rounded-lg text-xs font-bold transition-all ${
+                          readingType === 'special' ? 'bg-white text-blue-900 shadow' : 'text-slate-600'
+                        }`}
+                      >
+                        ר"ח / חוה"מ (4 עליות)
+                      </button>
+                    </div>
+
+                    <div className="space-y-3">
+                      {(readingType === 'weekday' 
+                        ? ['כהן', 'לוי', 'ישראל'] 
+                        : ['כהן', 'לוי', 'ישראל (שלישי)', 'ישראל (רביעי)']
+                      ).map((aliyah, idx) => (
+                        <div key={idx} className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm">
+                          <div className="flex justify-between items-center mb-3">
+                            <span className="font-bold text-blue-900 text-sm">{aliyah}</span>
+                            <span className="text-xs bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full">
+                              עלייה {idx + 1}
+                            </span>
+                          </div>
+
+                          <select 
+                            onChange={(e) => {
+                              const selected = worshippers.find(w => w.id === e.target.value);
+                              if (selected) handleRecordAliya(selected, aliyah);
+                              e.target.value = "";
+                            }}
+                            className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-blue-500 outline-none"
+                          >
+                            <option value="">-- בחר מתפלל לעלייה --</option>
+                            {worshippers
+                              .filter(w => {
+                                if (idx === 0) return w.status === 'כהן';
+                                if (idx === 1) return w.status === 'לוי';
+                                return true;
+                              })
+                              .map(w => (
+                                <option key={w.id} value={w.id}>
+                                  {w.name} ({w.status}) - עלה {w.callCount || 0} פעמים
+                                </option>
+                              ))}
+                          </select>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {activeTab === 'worshippers' && (
+                  <div className="space-y-3">
+                    <button 
+                      onClick={() => {
+                        setEditingWorshipper(null);
+                        setFormData({ name: '', status: 'ישראל', yahrzeit: '', notes: '' });
+                        setShowAddForm(true);
+                      }}
+                      className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold p-3 rounded-2xl flex items-center justify-center gap-2 shadow-md"
+                    >
+                      <i data-lucide="plus" className="w-5 h-5"></i>
+                      <span>הוסף מתפלל חדש</span>
+                    </button>
+
+                    {loading ? (
+                      <p className="text-center text-slate-400 py-6 text-sm">טוען מתפללים מהענן...</p>
+                    ) : worshippers.length === 0 ? (
+                      <p className="text-center text-slate-400 py-6 text-sm">אין מתפללים רשומים עדיין</p>
+                    ) : (
+                      worshippers.map(w => (
+                        <div key={w.id} className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm flex justify-between items-center">
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <h3 className="font-bold text-slate-800">{w.name}</h3>
+                              <span className={`text-xs px-2 py-0.5 rounded-full font-semibold ${
+                                w.status === 'כהן' ? 'bg-amber-100 text-amber-800' :
+                                w.status === 'לוי' ? 'bg-blue-100 text-blue-800' : 'bg-slate-100 text-slate-700'
+                              }`}>
+                                {w.status}
+                              </span>
+                            </div>
+                            <p className="text-xs text-slate-500 mt-1">
+                              עליות: {w.callCount || 0} {w.yahrzeit && `| אזכרה: ${w.yahrzeit}`}
+                            </p>
+                          </div>
+
+                          <button 
+                            onClick={() => {
+                              setEditingWorshipper(w);
+                              setFormData({ name: w.name, status: w.status, yahrzeit: w.yahrzeit || '', notes: w.notes || '' });
+                              setShowAddForm(true);
+                            }}
+                            className="text-slate-400 hover:text-blue-600 p-2"
+                          >
+                            <i data-lucide="edit" className="w-5 h-5"></i>
+                          </button>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                )}
+
+                {activeTab === 'history' && (
+                  <div className="space-y-3">
+                    <h2 className="font-bold text-slate-800 mb-2">היסטוריית עליות</h2>
+                    {history.length === 0 ? (
+                      <p className="text-center text-slate-400 py-6 text-sm">טרם נרשמו עליות במערכת</p>
+                    ) : (
+                      history.map(item => (
+                        <div key={item.id} className="bg-white p-3 rounded-xl border border-slate-200 shadow-sm flex justify-between items-center text-sm">
+                          <div>
+                            <p className="font-bold text-slate-800">{item.worshipperName}</p>
+                            <p className="text-xs text-slate-500">{item.aliyahName} • {item.dateHebrew}</p>
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                )}
+
+                {activeTab === 'calendar' && (
+                  <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm text-center space-y-3">
+                    <i data-lucide="calendar" className="w-10 h-10 text-blue-600 mx-auto"></i>
+                    <h2 className="font-bold text-slate-800">לוח שנה עברי</h2>
+                    <div className="p-3 bg-blue-50 rounded-xl text-blue-900 font-bold text-sm">
+                      {hebrewDate}
+                    </div>
+                  </div>
+                )}
+
+                {activeTab === 'reports' && (
+                  <div className="space-y-4">
+                    <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm">
+                      <h3 className="font-bold text-slate-800 text-sm mb-3">שיאני העליות</h3>
+                      <div className="space-y-2">
+                        {[...worshippers].sort((a,b) => (b.callCount||0) - (a.callCount||0)).slice(0, 3).map((w, i) => (
+                          <div key={w.id} className="flex justify-between items-center text-sm border-b border-slate-50 pb-2">
+                            <span className="text-slate-700">{i+1}. {w.name}</span>
+                            <span className="font-bold text-blue-600">{w.callCount || 0} עליות</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm">
+                      <h3 className="font-bold text-slate-800 text-sm mb-3">מתפללים שלא עלו הרבה זמן</h3>
+                      <div className="space-y-2">
+                        {[...worshippers].sort((a,b) => (a.callCount||0) - (b.callCount||0)).slice(0, 3).map((w, i) => (
+                          <div key={w.id} className="flex justify-between items-center text-sm border-b border-slate-50 pb-2">
+                            <span className="text-slate-700">{w.name}</span>
+                            <span className="text-xs bg-amber-100 text-amber-800 px-2 py-0.5 rounded-full font-semibold">
+                              {w.callCount || 0} עליות בלבד
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
+          </main>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<GabbaiApp />);
+  </script>
+</body>
+</html>
